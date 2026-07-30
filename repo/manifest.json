@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/remisharrock/Jellyfin-Transcode-Downloader/main/logo.png",
     "versions": [
       {
+        "version": "1.1.1.0",
+        "changelog": "Fix transcoded downloads targeting the season instead of the episode\n\nThe menu entry now resolves the item the action sheet was opened for, so a\ndownload started from an episode row on a season or series page hits the\nepisode instead of the season, which failed with a bare \"Download failed\"\n(InvalidCastException: Season -> IHasMediaSources). Items with nothing to\ntranscode now say so instead of firing a request the server can only reject.",
+        "targetAbi": "10.11.8.0",
+        "sourceUrl": "https://github.com/remisharrock/Jellyfin-Transcode-Downloader/releases/download/v1.1.1/jellyfin-transcode-downloader_1.1.1.zip",
+        "checksum": "d5c1f319938928ab092adc1c5a3a82b6",
+        "timestamp": "2026-07-30T18:12:14Z"
+      },
+      {
         "version": "1.1.0.0",
         "changelog": "Add video and audio codec selection (H.264/HEVC/AV1, AAC/Opus)",
         "targetAbi": "10.11.8.0",
