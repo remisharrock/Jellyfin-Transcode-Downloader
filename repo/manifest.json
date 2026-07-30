@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/remisharrock/Jellyfin-Transcode-Downloader/main/logo.png",
     "versions": [
       {
+        "version": "1.1.0.0",
+        "changelog": "Add video and audio codec selection (H.264/HEVC/AV1, AAC/Opus)",
+        "targetAbi": "10.11.8.0",
+        "sourceUrl": "https://github.com/remisharrock/Jellyfin-Transcode-Downloader/releases/download/v1.1.0/jellyfin-transcode-downloader_1.1.0.zip",
+        "checksum": "f17212d140fb47c978fd29245176fdba",
+        "timestamp": "2026-07-30T17:32:21Z"
+      },
+      {
         "version": "1.0.25.0",
         "changelog": "fix: transcoding actually respects selected quality tier.",
         "targetAbi": "10.11.8.0",
