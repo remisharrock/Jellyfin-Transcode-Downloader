@@ -15,7 +15,8 @@ original file.
 >
 > This fork adds **video and audio codec selection** (HEVC and AV1 alongside H.264, Opus
 > alongside AAC), backed by a server-side capability probe so only encoders your FFmpeg
-> actually has are offered. See [What this fork adds](#what-this-fork-adds) below.
+> actually has are offered, and an admin setting for **simultaneous downloads**. See
+> [What this fork adds](#what-this-fork-adds) below.
 >
 > The change has been [proposed upstream](https://github.com/ph15ch/Jellyfin-Transcode-Downloader/pulls).
 > **If it is merged, use the original repository instead of this fork** — this fork exists only
@@ -23,7 +24,8 @@ original file.
 
 ## What this fork adds
 
-The download dialog gains a **codec picker** above the quality tiers:
+The download dialog gains a **codec picker** above the quality tiers, and the queue behind it
+gains a configurable number of **simultaneous downloads**:
 
 | | Original | This fork |
 |---|---|---|
@@ -31,6 +33,8 @@ The download dialog gains a **codec picker** above the quality tiers:
 | Audio codec | AAC only (hardcoded) | AAC · Opus |
 | Encoder availability | n/a | Probed server-side before the codec is offered |
 | Bitrate tiers | Absolute | Codec-relative (HEVC ≈ 65%, AV1 ≈ 50% of the H.264 target) |
+| Download queue | One at a time | 1–5 at a time, set by the administrator |
+| Settings page | n/a | Dashboard → Plugins → Transcode Downloader |
 
 Why the probe matters: Jellyfin resolves a software encoder such as `libsvtav1` or `libx265`
 *without* checking that FFmpeg actually ships it. Requesting a codec the server cannot encode
