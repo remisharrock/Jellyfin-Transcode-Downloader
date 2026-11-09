@@ -97,6 +97,12 @@ class Element {
 
 function matches(element, selector) {
     if (selector === '*') return true;
+    if (selector === '.itemDetailPage:not(.hide)') {
+        return element.className === 'itemDetailPage';
+    }
+    if (/^\.\w+$/.test(selector)) {
+        return (element.className || '').split(' ').includes(selector.slice(1));
+    }
     if (selector === '.actionSheetMenuItem[data-id="download"]') {
         return element.className?.includes('actionSheetMenuItem')
             && element.getAttribute('data-id') === 'download';
@@ -109,7 +115,8 @@ function matches(element, selector) {
 
 const observers = [];
 
-test('shows codec options, handles Android downloads, and stops completed transcodes', async () => {
+function createHarness({ item, selection, rowItemId } = {}) {
+    observers.length = 0;
     const source = fs.readFileSync(path.join(__dirname, '../web/plugin.js'), 'utf8');
     const documentElement = new Element('html');
     documentElement.lang = 'en-us';
@@ -122,11 +129,28 @@ test('shows codec options, handles Android downloads, and stops completed transc
     menu.appendChild(downloadButton);
     body.appendChild(menu);
 
+    const fields = {};
+    if (selection) {
+        const page = new Element('div');
+        page.className = 'itemDetailPage';
+        for (const [className, value] of Object.entries(selection)) {
+            const select = new Element('select');
+            select.className = className;
+            select.value = value;
+            fields[className] = select;
+            page.appendChild(select);
+        }
+        body.appendChild(page);
+    }
+
     const document = {
         body,
         documentElement,
         createElement: tagName => new Element(tagName),
-        addEventListener() {},
+        listeners: {},
+        addEventListener(type, callback) {
+            this.listeners[type] = callback;
+        },
         querySelector: selector => body.querySelector(selector),
         getElementById: id => [body, ...body.querySelectorAll('*')].find(element => element.id === id) || null,
     };
@@ -182,7 +206,7 @@ test('shows codec options, handles Android downloads, and stops completed transc
             accessToken: () => 'test-token',
             getCurrentUserId: () => 'user',
             serverAddress: () => 'http://jellyfin.test',
-            getItem: async (_userId, id) => ({
+            getItem: async (_userId, id) => item || ({
                 Id: id,
                 MediaType: 'Video',
                 MediaSources: [{ Bitrate: 100_000_000 }],
@@ -200,6 +224,16 @@ test('shows codec options, handles Android downloads, and stops completed transc
     };
 
     vm.runInNewContext(source, context, { filename: 'web/plugin.js' });
+    if (rowItemId) {
+        document.listeners.contextmenu({
+            target: { closest: () => ({ getAttribute: () => rowItemId }) },
+        });
+    }
+    return { body, window, requests, fields, browserUrl: () => browserUrl };
+}
+
+test('shows codec options, handles Android downloads, and stops completed transcodes', async () => {
+    const { body, window, requests, browserUrl } = createHarness();
     await new Promise(resolve => setTimeout(resolve, 100));
     body.querySelector('[data-id^="qd-"]').click();
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -208,8 +242,8 @@ test('shows codec options, handles Android downloads, and stops completed transc
     const tier = body.querySelector('[data-id^="qd-360p"]');
     assert.ok(tier);
     tier.click();
-    assert.match(browserUrl, /PlaySessionId=/);
-    assert.match(browserUrl, /DeviceId=transcode-downloader-/);
+    assert.match(browserUrl(), /PlaySessionId=/);
+    assert.match(browserUrl(), /DeviceId=transcode-downloader-/);
 
     window.NativeInterface = undefined;
     navigator.userAgent = '';
@@ -229,4 +263,156 @@ test('shows codec options, handles Android downloads, and stops completed transc
     assert.ok(stopRequest);
     assert.equal(stopRequest.init.headers.Authorization, 'MediaBrowser Token="test-token"');
     assert.equal(new URL(stopRequest.url).searchParams.has('api_key'), false);
+});
+
+const itemId = '11111111111111111111111111111111';
+const mediaItem = {
+    Id: itemId,
+    MediaType: 'Video',
+    MediaSources: [
+        {
+            Id: 'first-version', Bitrate: 100_000_000,
+            DefaultAudioStreamIndex: 1, DefaultSubtitleStreamIndex: 3,
+            MediaStreams: [
+                { Type: 'Audio', Index: 1, DisplayTitle: 'English' },
+                { Type: 'Subtitle', Index: 3, DisplayTitle: 'English SRT' },
+            ],
+        },
+        {
+            Id: 'second-version', Bitrate: 5_000_000,
+            DefaultAudioStreamIndex: 2, DefaultSubtitleStreamIndex: 5,
+            MediaStreams: [
+                { Type: 'Video', Index: 0 },
+                { Type: 'Audio', Index: 2, DisplayTitle: 'English' },
+                { Type: 'Audio', Index: 4, DisplayTitle: 'Russian' },
+                { Type: 'Subtitle', Index: 5, DisplayTitle: 'English SRT' },
+                { Type: 'Subtitle', Index: 7, DisplayTitle: 'French SRT', IsExternal: true },
+            ],
+        },
+    ],
+};
+
+async function openQualitySheet(harness) {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    harness.body.querySelector('[data-id^="qd-download"]').click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+}
+
+async function startDownload(harness) {
+    harness.body.querySelector('[data-id^="qd-360p"]').click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return new URL(harness.browserUrl()).searchParams;
+}
+
+test('snapshots the selected version, audio and external subtitles and burns them in', async () => {
+    const harness = createHarness({
+        item: mediaItem,
+        selection: { selectSource: 'second-version', selectAudio: '4', selectSubtitles: '7' },
+    });
+    await openQualitySheet(harness);
+    assert.match(harness.body.textContent, /Audio track: Russian/);
+    assert.match(harness.body.textContent, /Subtitles: French SRT/);
+    assert.match(harness.body.textContent, /permanently burned/);
+    assert.equal(harness.body.querySelector('[data-id^="qd-1080p"]'), null);
+    harness.fields.selectSource.value = 'first-version';
+    harness.fields.selectAudio.value = '1';
+    harness.fields.selectSubtitles.value = '-1';
+    const params = await startDownload(harness);
+    assert.equal(params.get('MediaSourceId'), 'second-version');
+    assert.equal(params.get('AudioStreamIndex'), '4');
+    assert.equal(params.get('SubtitleStreamIndex'), '7');
+    assert.equal(params.get('SubtitleMethod'), 'Encode');
+    assert.equal(params.get('allowVideoStreamCopy'), 'false');
+    assert.equal(params.get('VideoCodec'), 'h264');
+    assert.equal(params.get('AudioCodec'), 'aac');
+});
+
+test('None disables subtitles even when the source has default subtitles', async () => {
+    const harness = createHarness({
+        item: mediaItem,
+        selection: { selectSource: 'second-version', selectAudio: '2', selectSubtitles: '-1' },
+    });
+    await openQualitySheet(harness);
+    assert.match(harness.body.textContent, /Subtitles: None/);
+    assert.doesNotMatch(harness.body.textContent, /permanently burned/);
+    const params = await startDownload(harness);
+    assert.equal(params.get('AudioStreamIndex'), '2');
+    assert.equal(params.get('SubtitleStreamIndex'), '-1');
+    assert.equal(params.has('SubtitleMethod'), false);
+});
+
+test('episode row downloads ignore the parent page track selections', async () => {
+    const rowItemId = '22222222222222222222222222222222';
+    const harness = createHarness({
+        item: { ...mediaItem, Id: rowItemId },
+        rowItemId,
+        selection: { selectSource: 'second-version', selectAudio: '4', selectSubtitles: '7' },
+    });
+    await openQualitySheet(harness);
+    const params = await startDownload(harness);
+    assert.match(harness.browserUrl(), new RegExp(`/Videos/${rowItemId}/`));
+    assert.equal(params.get('MediaSourceId'), 'first-version');
+    assert.equal(params.get('AudioStreamIndex'), '1');
+    assert.equal(params.get('SubtitleStreamIndex'), '3');
+    assert.equal(params.get('SubtitleMethod'), 'Encode');
+});
+
+test('invalid or stale indices cannot select a stream of the wrong type', async () => {
+    const harness = createHarness({
+        item: mediaItem,
+        selection: { selectSource: 'second-version', selectAudio: '0', selectSubtitles: '4' },
+    });
+    await openQualitySheet(harness);
+    const params = await startDownload(harness);
+    assert.equal(params.get('AudioStreamIndex'), '2');
+    assert.equal(params.get('SubtitleStreamIndex'), '5');
+});
+
+test('sparse media metadata still downloads without inventing track indices', async () => {
+    const harness = createHarness({ item: { Id: itemId, MediaType: 'Video' } });
+    await openQualitySheet(harness);
+    const params = await startDownload(harness);
+    assert.equal(params.get('MediaSourceId'), itemId);
+    assert.equal(params.has('AudioStreamIndex'), false);
+    assert.equal(params.get('SubtitleStreamIndex'), '-1');
+    assert.equal(params.has('SubtitleMethod'), false);
+});
+
+test('browser fetch downloads preserve audio index zero and burn embedded subtitles', async () => {
+    const harness = createHarness({
+        item: {
+            Id: itemId,
+            MediaType: 'Video',
+            MediaSources: [{
+                Id: 'source', Bitrate: 5_000_000,
+                MediaStreams: [
+                    { Type: 'Audio', Index: 0, DisplayTitle: 'Russian' },
+                    { Type: 'Subtitle', Index: 2, DisplayTitle: 'French SRT', IsExternal: false },
+                ],
+            }],
+        },
+        selection: { selectSource: 'source', selectAudio: '0', selectSubtitles: '2' },
+    });
+    harness.window.NativeInterface = undefined;
+    await openQualitySheet(harness);
+    harness.body.querySelector('[data-id^="qd-360p"]').click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const request = harness.requests.find(({ url }) => url.includes('/stream.mp4?'));
+    assert.ok(request);
+    const params = new URL(request.url).searchParams;
+    assert.equal(params.get('AudioStreamIndex'), '0');
+    assert.equal(params.get('SubtitleStreamIndex'), '2');
+    assert.equal(params.get('SubtitleMethod'), 'Encode');
+});
+
+test('a removed media version cannot leak its track selections into the fallback source', async () => {
+    const harness = createHarness({
+        item: mediaItem,
+        selection: { selectSource: 'removed-version', selectAudio: '4', selectSubtitles: '-1' },
+    });
+    await openQualitySheet(harness);
+    const params = await startDownload(harness);
+    assert.equal(params.get('MediaSourceId'), 'first-version');
+    assert.equal(params.get('AudioStreamIndex'), '1');
+    assert.equal(params.get('SubtitleStreamIndex'), '3');
 });

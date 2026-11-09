@@ -96,6 +96,10 @@
         DownloadFailed: 'Download failed.',
         ChooseVideoCodec: 'Video codec',
         ChooseAudioCodec: 'Audio codec',
+        SelectedAudioTrack: 'Audio track',
+        SelectedSubtitles: 'Subtitles',
+        NoSubtitles: 'None',
+        BurnInSubtitlesHint: 'Selected subtitles will be permanently burned into the video and cannot be turned off.',
         CodecUnsupported: "not supported by this server's FFmpeg",
         CodecDisabledByAdmin: 'disabled by the server administrator',
         SoftwareEncodingHint: 'Software encoding — this can take a long time and the file is held in memory until it finishes.',
@@ -862,8 +866,9 @@
         if (!itemId) return;
 
         const transcodeBtn = makeMenuItem('video_settings', t('DownloadTranscode'), () => {
+            const trackSelection = captureTrackSelection(itemId);
             closeActiveSheet();
-            showQualitySheet(itemId);
+            showQualitySheet(itemId, trackSelection);
         });
 
         downloadBtn.insertAdjacentElement('afterend', transcodeBtn);
@@ -963,9 +968,68 @@
         return section;
     }
 
+    // --- Source and track selection ---
+
+    function captureTrackSelection(itemId) {
+        // A row's menu can target an episode while the page belongs to its series.
+        if (extractItemId(window.location.hash) !== itemId) return null;
+        const page = document.querySelector('.itemDetailPage:not(.hide)');
+        if (!page) return null;
+        return {
+            mediaSourceId: page.querySelector('.selectSource')?.value,
+            audioStreamIndex: page.querySelector('.selectAudio')?.value,
+            subtitleStreamIndex: page.querySelector('.selectSubtitles')?.value,
+        };
+    }
+
+    function resolveTrackSelection(item, selection) {
+        const sources = item.MediaSources || [];
+        const selectedSource = selection && sources.find(source => source.Id === selection.mediaSourceId);
+        const source = selectedSource || sources[0];
+        const streams = source?.MediaStreams || [];
+        const findStream = (type, index) => {
+            if (index === undefined || index === null || index === '') return null;
+            const number = Number(index);
+            return Number.isInteger(number) && number >= 0
+                ? streams.find(stream => stream.Type === type && stream.Index === number) || null
+                : null;
+        };
+        // Ignore stale page indices if its selected version no longer exists.
+        const pageSelection = selection && (!selection.mediaSourceId || selectedSource) ? selection : null;
+        const audio = findStream('Audio', pageSelection?.audioStreamIndex)
+            || findStream('Audio', source?.DefaultAudioStreamIndex)
+            || streams.find(stream => stream.Type === 'Audio');
+        const subtitleIndex = pageSelection?.subtitleStreamIndex;
+        const subtitle = String(subtitleIndex) === '-1' ? null
+            : findStream('Subtitle', subtitleIndex)
+                || findStream('Subtitle', source?.DefaultSubtitleStreamIndex);
+        return { source, audio, subtitle };
+    }
+
+    function buildTrackSummary(tracks) {
+        const summary = document.createElement('div');
+        summary.style.cssText = 'padding:8px 20px;font-size:13px;color:#aaa;';
+        const label = stream => stream.DisplayTitle || stream.Title || stream.Language || String(stream.Index);
+        if (tracks.audio) {
+            const audio = document.createElement('div');
+            audio.textContent = `${t('SelectedAudioTrack')}: ${label(tracks.audio)}`;
+            summary.appendChild(audio);
+        }
+        const subtitle = document.createElement('div');
+        subtitle.textContent = `${t('SelectedSubtitles')}: ${tracks.subtitle ? label(tracks.subtitle) : t('NoSubtitles')}`;
+        summary.appendChild(subtitle);
+        if (tracks.subtitle) {
+            const hint = document.createElement('div');
+            hint.style.cssText = 'margin-top:6px;color:#d0a24c;';
+            hint.textContent = t('BurnInSubtitlesHint');
+            summary.appendChild(hint);
+        }
+        return summary;
+    }
+
     // --- Quality overlay ---
 
-    async function showQualitySheet(itemId) {
+    async function showQualitySheet(itemId, trackSelection) {
         if (document.getElementById('qd-quality-sheet')) return;
 
         // Ensure strings are loaded before rendering UI
@@ -1018,7 +1082,9 @@
             return;
         }
 
-        const source = item && item.MediaSources && item.MediaSources[0];
+        const tracks = resolveTrackSelection(item, trackSelection);
+        const source = tracks.source;
+        sheet.appendChild(buildTrackSummary(tracks));
         // Filtered on the H.264-calibrated base bitrate so the set of rungs on offer stays
         // stable when the codec changes — only their encoder targets move.
         const tiers = source && source.Bitrate
@@ -1035,7 +1101,7 @@
                 const bitrate = scaleBitrate(tier.bitrate, factor);
                 const btn = makeMenuItem('video_settings', `${tier.resolution} · ${formatBitrate(bitrate)}`, () => {
                     scrim.remove();
-                    onTranscodeMenuClick(bitrate, item.Id || itemId, item);
+                    onTranscodeMenuClick(bitrate, item.Id || itemId, item, tracks);
                 });
                 tierList.appendChild(btn);
             }
@@ -1067,7 +1133,7 @@
 
     // --- Download actions ---
 
-    function onTranscodeMenuClick(bitrate, itemId, item) {
+    function onTranscodeMenuClick(bitrate, itemId, item, tracks) {
         if (!item) return;
         // Captured now: the sheet is gone, but the selection must not drift before the
         // ApiClient callback runs.
@@ -1085,19 +1151,23 @@
                 item,
                 videoCodec,
                 audioCodec,
+                tracks,
             );
         });
     }
 
-    function addToQueue(baseUrl, itemId, token, stopHeaders, selectedBitrate, item, videoCodec, audioCodec) {
-        const mediaSourceId = item.MediaSources && item.MediaSources[0] && item.MediaSources[0].Id
-            ? item.MediaSources[0].Id
-            : itemId;
+    function addToQueue(baseUrl, itemId, token, stopHeaders, selectedBitrate, item, videoCodec, audioCodec, tracks) {
+        const mediaSourceId = tracks.source?.Id || itemId;
         const playSessionId = randomId();
         const deviceId = `transcode-downloader-${playSessionId}`;
         // A single codec is sent deliberately: a comma-separated list lets the server silently
         // downgrade while the UI still claims the codec the user picked.
-        const url = `${baseUrl}/Videos/${itemId}/stream.mp4?MediaSourceId=${mediaSourceId}&VideoBitrate=${selectedBitrate}&VideoCodec=${videoCodec}&AudioCodec=${audioCodec}&MaxAudioChannels=2&allowVideoStreamCopy=false&allowAudioStreamCopy=false&Static=false&PlaySessionId=${playSessionId}&DeviceId=${encodeURIComponent(deviceId)}&api_key=${token}`;
+        const trackParams = new URLSearchParams({
+            SubtitleStreamIndex: tracks.subtitle ? tracks.subtitle.Index : -1,
+        });
+        if (tracks.audio) trackParams.set('AudioStreamIndex', tracks.audio.Index);
+        if (tracks.subtitle) trackParams.set('SubtitleMethod', 'Encode');
+        const url = `${baseUrl}/Videos/${itemId}/stream.mp4?MediaSourceId=${encodeURIComponent(mediaSourceId)}&VideoBitrate=${selectedBitrate}&VideoCodec=${videoCodec}&AudioCodec=${audioCodec}&MaxAudioChannels=2&allowVideoStreamCopy=false&allowAudioStreamCopy=false&Static=false&PlaySessionId=${playSessionId}&DeviceId=${encodeURIComponent(deviceId)}&api_key=${encodeURIComponent(token)}&${trackParams}`;
 
         if (isAndroidAppWebView()) {
             handOffToBrowser(url, baseUrl, deviceId, playSessionId);
