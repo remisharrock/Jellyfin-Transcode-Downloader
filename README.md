@@ -70,10 +70,18 @@ Jellyfin transcodes on the fly and the plugin downloads the stream with a live p
 To grab the original file without transcoding, use Jellyfin's own **Download** button that's
 already in the More menu.
 
+In the Jellyfin Android app, downloads open in the system browser because its embedded WebView
+does not save the plugin's in-page downloads. The browser saves the file as `stream.mp4`, so
+rename it afterwards; in-app progress and cancellation are unavailable for this handoff.
+
 You can queue multiple items: navigate to another movie or episode and add more downloads
 while one is already in progress. By default each queued item waits its turn and starts
 automatically when the one ahead of it finishes; an administrator can allow
 [several at a time](#simultaneous-downloads).
+
+The plugin also stops completed or failed server-side transcodes so Jellyfin can delete their
+temporary files. Downloads handed to the Android system browser are cleaned up the next time the
+plugin loads, after a six-hour safety delay.
 
 ### Choosing a codec
 

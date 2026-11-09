@@ -101,6 +101,9 @@
         SoftwareEncodingHint: 'Software encoding — this can take a long time and the file is held in memory until it finishes.',
         DownloadFailedCodec: 'Download failed — the server could not encode with {codec}.',
         DownloadFailedStatus: 'Download failed (HTTP {status}).',
+        BrowserHandoffHint: 'The Jellyfin Android app cannot save downloads itself, so this opens in your browser. The file is saved as stream.mp4 — rename it afterwards.',
+        BrowserHandoffStarted: 'Handed to your browser — check its downloads.',
+        BrowserHandoffFailed: 'Could not open your browser.',
     };
 
     // Populated by initStrings(); null until loaded.
@@ -196,7 +199,9 @@
             getApiClient(0, 10, async (client) => {
                 try {
                     const baseUrl = client.serverAddress() || window.location.origin;
-                    const res = await fetch(`${baseUrl}/TranscodeDownloader/Config?api_key=${encodeURIComponent(client.accessToken())}`);
+                    const res = await fetch(`${baseUrl}/TranscodeDownloader/Config`, {
+                        headers: getAuthorizationHeaders(client),
+                    });
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const payload = await res.json();
                     const limit = readField(payload, 'MaxConcurrentDownloads');
@@ -215,7 +220,7 @@
     }
 
     // --- Download queue ---
-    // Each entry: { id, filename, estimatedBytes, url, abortController,
+    // Each entry: { id, filename, estimatedBytes, url, stopUrl, abortController,
     //               status: 'waiting'|'active'|'finished' }
     // Up to maxConcurrentDownloads entries are active at once. Each active entry is also one
     // transcode running on the server: for this plugin a download *is* its transcode.
@@ -224,6 +229,89 @@
     // Entry ids double as DOM ids and as the key the cancel button removes by, so they have to
     // be unique even for two downloads of the same item started in the same millisecond.
     let nextEntrySequence = 0;
+
+    function randomId() {
+        const bytes = new Uint8Array(16);
+        (window.crypto || window.msCrypto).getRandomValues(bytes);
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    function buildStopUrl(baseUrl, deviceId, playSessionId) {
+        return `${baseUrl}/Videos/ActiveEncodings?deviceId=${encodeURIComponent(deviceId)}`
+            + `&playSessionId=${playSessionId}`;
+    }
+
+    function stopActiveEncoding(entry) {
+        if (!entry.stopUrl) return;
+        const stopUrl = entry.stopUrl;
+        entry.stopUrl = null;
+        try {
+            fetch(stopUrl, {
+                method: 'DELETE',
+                keepalive: true,
+                headers: entry.stopHeaders,
+            }).catch(err => {
+                console.warn('[TranscodeDownloader] Failed to stop server transcode:', err);
+            });
+        } catch (err) {
+            console.warn('[TranscodeDownloader] Failed to stop server transcode:', err);
+        }
+    }
+
+    window.addEventListener('pagehide', () => {
+        downloadQueue.forEach(entry => {
+            if (entry.status === 'active') stopActiveEncoding(entry);
+        });
+    });
+
+    const STORAGE_PENDING_STOPS = 'transcodeDownloader.pendingStops';
+    const PENDING_STOP_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+    const PENDING_STOP_MAX = 50;
+
+    function readPendingStops() {
+        try {
+            const raw = window.localStorage.getItem(STORAGE_PENDING_STOPS);
+            const entries = raw ? JSON.parse(raw) : [];
+            return Array.isArray(entries)
+                ? entries.filter(entry => entry && entry.baseUrl && entry.deviceId && entry.playSessionId)
+                : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function writePendingStops(entries) {
+        try {
+            window.localStorage.setItem(STORAGE_PENDING_STOPS, JSON.stringify(entries));
+        } catch (_) {
+            // Without local storage, the transcode temp file remains until the server restarts.
+        }
+    }
+
+    function rememberPendingStop(baseUrl, deviceId, playSessionId) {
+        const entries = readPendingStops();
+        entries.push({ baseUrl, deviceId, playSessionId, at: Date.now() });
+        writePendingStops(entries.slice(-PENDING_STOP_MAX));
+    }
+
+    function flushPendingStops() {
+        const entries = readPendingStops();
+        const now = Date.now();
+        const due = entries.filter(entry => now - (entry.at || 0) >= PENDING_STOP_MIN_AGE_MS);
+        if (due.length === 0) return;
+
+        getApiClient(0, 10, client => {
+            const headers = getAuthorizationHeaders(client);
+            due.forEach(entry => {
+                const url = buildStopUrl(entry.baseUrl, entry.deviceId, entry.playSessionId);
+                fetch(url, { method: 'DELETE', headers }).catch(err => {
+                    console.warn('[TranscodeDownloader] Deferred transcode stop failed:', err);
+                });
+            });
+            writePendingStops(readPendingStops()
+                .filter(entry => now - (entry.at || 0) < PENDING_STOP_MIN_AGE_MS));
+        }, () => {});
+    }
 
     function enqueue(entry) {
         downloadQueue.push(entry);
@@ -294,6 +382,8 @@
             console.error('[TranscodeDownloader] Download failed:', err);
             updateEntryStatus(entry, describeFailure(entry, err));
             retireEntry(entry, 3000);
+        } finally {
+            stopActiveEncoding(entry);
         }
     }
 
@@ -466,6 +556,39 @@
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
     }
 
+    function isAndroidAppWebView() {
+        const shell = window.NativeShell;
+        if (!shell || typeof shell.openUrl !== 'function') return false;
+        if (!window.NativeInterface || typeof window.NativeInterface.openUrl !== 'function') return false;
+        return /Android/i.test(navigator.userAgent || '');
+    }
+
+    function showTransientNotice(text) {
+        const existing = document.getElementById('qd-notice');
+        if (existing) existing.remove();
+
+        const notice = document.createElement('div');
+        notice.id = 'qd-notice';
+        notice.textContent = text;
+        notice.style.cssText = 'position:fixed;bottom:16px;left:16px;right:16px;max-width:400px;margin-left:auto;'
+            + 'background:#1a1a1a;border:1px solid #444;border-radius:6px;color:#fff;font-size:13px;'
+            + 'font-family:monospace;padding:12px 16px;z-index:9999;';
+        document.body.appendChild(notice);
+        setTimeout(() => notice.remove(), 8000);
+    }
+
+    function handOffToBrowser(url, baseUrl, deviceId, playSessionId) {
+        try {
+            window.NativeShell.openUrl(url);
+        } catch (err) {
+            console.error('[TranscodeDownloader] Browser handoff failed:', err);
+            showTransientNotice(t('BrowserHandoffFailed'));
+            return;
+        }
+        rememberPendingStop(baseUrl, deviceId, playSessionId);
+        showTransientNotice(t('BrowserHandoffStarted'));
+    }
+
     // --- Item metadata ---
 
     function extractItemId(hash) {
@@ -514,6 +637,12 @@
             console.error('[TranscodeDownloader] ApiClient not available after retries');
             if (onFail) onFail();
         }
+    }
+
+    function getAuthorizationHeaders(client) {
+        return {
+            Authorization: `MediaBrowser Token="${encodeURIComponent(client.accessToken())}"`,
+        };
     }
 
     // --- Codec capabilities ---
@@ -623,7 +752,9 @@
             getApiClient(0, 10, async (client) => {
                 try {
                     const baseUrl = client.serverAddress() || window.location.origin;
-                    const res = await fetch(`${baseUrl}/TranscodeDownloader/Codecs?api_key=${encodeURIComponent(client.accessToken())}`);
+                    const res = await fetch(`${baseUrl}/TranscodeDownloader/Codecs`, {
+                        headers: getAuthorizationHeaders(client),
+                    });
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const payload = await res.json();
 
@@ -923,6 +1054,13 @@
             sheet.insertBefore(buildCodecSection(renderTiers), header);
         }
 
+        if (isAndroidAppWebView()) {
+            const handoffHint = document.createElement('div');
+            handoffHint.style.cssText = 'padding:0 20px 8px;font-size:12px;color:#d0a24c;';
+            handoffHint.textContent = t('BrowserHandoffHint');
+            sheet.appendChild(handoffHint);
+        }
+
         renderTiers();
         sheet.appendChild(tierList);
     }
@@ -938,17 +1076,34 @@
         getApiClient(0, 5, (client) => {
             const token = client.accessToken();
             const baseUrl = client.serverAddress() || window.location.origin;
-            addToQueue(baseUrl, itemId, token, bitrate, item, videoCodec, audioCodec);
+            addToQueue(
+                baseUrl,
+                itemId,
+                token,
+                getAuthorizationHeaders(client),
+                bitrate,
+                item,
+                videoCodec,
+                audioCodec,
+            );
         });
     }
 
-    function addToQueue(baseUrl, itemId, token, selectedBitrate, item, videoCodec, audioCodec) {
+    function addToQueue(baseUrl, itemId, token, stopHeaders, selectedBitrate, item, videoCodec, audioCodec) {
         const mediaSourceId = item.MediaSources && item.MediaSources[0] && item.MediaSources[0].Id
             ? item.MediaSources[0].Id
             : itemId;
+        const playSessionId = randomId();
+        const deviceId = `transcode-downloader-${playSessionId}`;
         // A single codec is sent deliberately: a comma-separated list lets the server silently
         // downgrade while the UI still claims the codec the user picked.
-        const url = `${baseUrl}/Videos/${itemId}/stream.mp4?MediaSourceId=${mediaSourceId}&VideoBitrate=${selectedBitrate}&VideoCodec=${videoCodec}&AudioCodec=${audioCodec}&MaxAudioChannels=2&allowVideoStreamCopy=false&allowAudioStreamCopy=false&Static=false&api_key=${token}`;
+        const url = `${baseUrl}/Videos/${itemId}/stream.mp4?MediaSourceId=${mediaSourceId}&VideoBitrate=${selectedBitrate}&VideoCodec=${videoCodec}&AudioCodec=${audioCodec}&MaxAudioChannels=2&allowVideoStreamCopy=false&allowAudioStreamCopy=false&Static=false&PlaySessionId=${playSessionId}&DeviceId=${encodeURIComponent(deviceId)}&api_key=${token}`;
+
+        if (isAndroidAppWebView()) {
+            handOffToBrowser(url, baseUrl, deviceId, playSessionId);
+            return;
+        }
+        const stopUrl = buildStopUrl(baseUrl, deviceId, playSessionId);
 
         const videoTag = codecTag(VIDEO_CODECS, videoCodec);
         const audioTag = codecTag(AUDIO_CODECS, audioCodec);
@@ -972,6 +1127,8 @@
             filename,
             estimatedBytes,
             url,
+            stopUrl,
+            stopHeaders,
             videoCodec,
             audioCodec,
             codecLabel: `${videoTag} · ${formatBitrate(selectedBitrate)} · ${audioTag}`,
@@ -1000,6 +1157,7 @@
 
     injectQueuePanel();
     initStrings();
+    flushPendingStops();
 
     // Re-fetch strings whenever Jellyfin changes the UI language (updates document.documentElement.lang).
     new MutationObserver(() => {
