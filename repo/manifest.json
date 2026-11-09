@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/remisharrock/Jellyfin-Transcode-Downloader/main/logo.png",
     "versions": [
       {
+        "version": "1.2.2.0",
+        "changelog": "Respect selected audio tracks and burn selected subtitles into downloads\n\nInclude PR #5: preserve the selected media version and audio track, burn selected embedded or external subtitles into transcoded downloads, and honor the None subtitle selection. Include regression coverage and updated translations and documentation.",
+        "targetAbi": "10.11.8.0",
+        "sourceUrl": "https://github.com/remisharrock/Jellyfin-Transcode-Downloader/releases/download/v1.2.2/jellyfin-transcode-downloader_1.2.2.zip",
+        "checksum": "9daccfd923c0a1f1fec9bc1d2231b525",
+        "timestamp": "2026-11-09T22:41:49Z"
+      },
+      {
         "version": "1.2.1.0",
         "changelog": "Fix codec picker auth on Jellyfin 12\n\nSend authenticated codec and configuration requests with the MediaBrowser Authorization header so the codec picker works when query-token authentication is rejected.\n\nInclude regression coverage, transcode cleanup, Android system-browser download handoff, updated translations, and installation documentation.",
         "targetAbi": "10.11.8.0",
