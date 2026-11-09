@@ -182,7 +182,10 @@ Jellyfin web updates.
 A second endpoint, `GET /TranscodeDownloader/Codecs`, reports which video and audio encoders
 this server's FFmpeg actually has and which the administrator permits. Unlike the script and
 translation endpoints it requires a logged-in session, because it exposes server encoding
-configuration. If it is unreachable the picker quietly falls back to H.264/AAC only.
+configuration. The client sends its session token in an `Authorization: MediaBrowser Token=...`
+header for this and the configuration endpoint, rather than as an `api_key` query parameter;
+this avoids the query-token authentication failure that prevented the codec picker from loading
+on Jellyfin 12.x. If the codecs endpoint is unreachable, the picker falls back to H.264/AAC only.
 
 A third, `GET /TranscodeDownloader/Config`, hands the client the administrator settings it has
 to honour — currently the simultaneous-download limit. It exists because Jellyfin's own
@@ -218,12 +221,18 @@ unreachable the queue stays sequential.
 
 ### Production (stable releases)
 
+**Version 1.2.1 and later include the Jellyfin 12.x codec-picker authentication fix.**
+
 1. Add this plugin's repository URL under **Dashboard → Plugins → Repositories**:
    ```
    https://raw.githubusercontent.com/remisharrock/Jellyfin-Transcode-Downloader/main/repo/manifest.json
    ```
 2. Install **Transcode Downloader** from the catalog.
 3. Restart Jellyfin.
+
+If you already use this fork, update Transcode Downloader to **1.2.1 or later**, restart
+Jellyfin, and reload the web client. Keep only this fork's repository registered for this
+plugin, not upstream's, to avoid conflicting catalog entries.
 
 ### Testing (pre-release builds)
 
