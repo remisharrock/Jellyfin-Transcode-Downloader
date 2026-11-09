@@ -70,6 +70,15 @@ Jellyfin transcodes on the fly and the plugin downloads the stream with a live p
 To grab the original file without transcoding, use Jellyfin's own **Download** button that's
 already in the More menu.
 
+On the movie or episode detail page, choose the **version**, **audio track** and
+**subtitles** in Jellyfin before opening Download (Transcode…). The download uses those
+selections, independently of the output audio codec (AAC/Opus). Selected subtitles are
+**permanently burned into the video**: they cannot be switched off in the downloaded file.
+Choose **None** in Jellyfin's subtitle selector for a download without subtitles.
+The quality picker shows the tracks that will be used. Downloads opened from another
+item's page (for example an episode row on a season page) use that item's first media
+source and its default tracks, not the tracks selected on the parent page.
+
 In the Jellyfin Android app, downloads open in the system browser because its embedded WebView
 does not save the plugin's in-page downloads. The browser saves the file as `stream.mp4`, so
 rename it afterwards; in-app progress and cancellation are unavailable for this handoff.
